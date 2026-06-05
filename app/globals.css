@@ -6,35 +6,33 @@
 
 * {
   box-sizing: border-box;
+  -webkit-tap-highlight-color: transparent;
 }
 
-html, body {
+html {
+  overscroll-behavior: none;
+  overflow: hidden;
+  height: 100%;
+  height: -webkit-fill-available;
+}
+
+body {
   margin: 0;
   padding: 0;
   background: #08080a;
   overflow-x: hidden;
+  overflow-y: auto;
+  height: 100%;
+  height: -webkit-fill-available;
+  -webkit-overflow-scrolling: touch;
 }
 
-/* Prevent text selection on controls */
-.no-select {
-  -webkit-user-select: none;
-  user-select: none;
-}
-
-/* Jog wheel touch feedback */
-.jog-active {
-  box-shadow: 0 6px 20px rgba(0,0,0,.6), inset 0 0 30px rgba(0,0,0,.7), 0 0 20px rgba(36,193,232,0.15) !important;
-}
-
-/* Pulsing animation for init screen */
-@keyframes pulse-glow {
-  0%, 100% { opacity: 0.6; }
-  50% { opacity: 1; }
-}
-
-@keyframes spin-platter {
-  from { transform: rotate(0deg); }
-  to { transform: rotate(360deg); }
+/* Prevent iOS pull-to-refresh and bounce */
+body.booth-active {
+  overflow: hidden;
+  position: fixed;
+  width: 100%;
+  height: 100%;
 }
 
 /* Track end warning flash */
@@ -42,19 +40,41 @@ html, body {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.3; }
 }
-
 .warning-flash {
   animation: warning-flash 0.5s ease-in-out infinite;
 }
 
-/* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 4px;
+/* Beat pulse */
+@keyframes beat-pulse {
+  0% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.15); }
+  100% { transform: scale(1); opacity: 0.7; }
 }
-::-webkit-scrollbar-track {
-  background: #08080a;
+
+/* Scrollbar */
+::-webkit-scrollbar { width: 4px; }
+::-webkit-scrollbar-track { background: #08080a; }
+::-webkit-scrollbar-thumb { background: #2a2a32; border-radius: 2px; }
+
+/* Portrait orientation prompt for phones */
+@media (max-width: 767px) and (orientation: portrait) {
+  .portrait-block {
+    display: flex !important;
+  }
+  .landscape-content {
+    display: none !important;
+  }
 }
-::-webkit-scrollbar-thumb {
-  background: #2a2a32;
-  border-radius: 2px;
+@media (min-width: 768px), (orientation: landscape) {
+  .portrait-block {
+    display: none !important;
+  }
+}
+
+/* Mobile touch targets */
+@media (pointer: coarse) {
+  .touch-target {
+    min-width: 44px;
+    min-height: 44px;
+  }
 }

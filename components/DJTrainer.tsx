@@ -455,8 +455,7 @@ export default function DJTrainer() {
   const cvsB = useRef<HTMLCanvasElement>(null);
   const zoomA = useRef<HTMLCanvasElement>(null);
   const zoomB = useRef<HTMLCanvasElement>(null);
-  const fileRefA = useRef<HTMLInputElement>(null);
-  const fileRefB = useRef<HTMLInputElement>(null);
+  // file inputs use native <label htmlFor> — no refs needed for iOS compatibility
   const platterRefA = useRef<HTMLDivElement>(null);
   const platterRefB = useRef<HTMLDivElement>(null);
   const platterAngle = useRef<Record<DeckId, number>>({ A: 0, B: 0 });
@@ -955,7 +954,7 @@ export default function DJTrainer() {
     const st = id === 'A' ? deckA : deckB;
     const cvsRef = id === 'A' ? cvsA : cvsB;
     const zoomRef = id === 'A' ? zoomA : zoomB;
-    const fileRef = id === 'A' ? fileRefA : fileRefB;
+    // file input uses native <label htmlFor={`file-${id}`}> for iOS compatibility
     const plRef = id === 'A' ? platterRefA : platterRefB;
     const remaining = (st.dur || 0) - st.pos;
     const endWarn = st.loaded && st.playing && remaining < 30;
@@ -977,10 +976,16 @@ export default function DJTrainer() {
           </span>
         </div>
 
-        {/* Zoomed waveform (main display) */}
-        <div className="rounded overflow-hidden" style={{ background: '#0a0a0e', border: `1px solid ${C.edge}` }}>
+        {/* Zoomed waveform (main display) — tap to load when empty */}
+        <div className="rounded overflow-hidden relative" style={{ background: '#0a0a0e', border: `1px solid ${C.edge}` }}>
           <canvas ref={zoomRef} width={400} height={60}
             style={{ width: '100%', height: isMobile ? 44 : 56, display: 'block' }} />
+          {!st.loaded && (
+            <label htmlFor={`file-${id}`} className="absolute inset-0 flex items-center justify-center cursor-pointer"
+              style={{ background: 'rgba(10,10,14,0.85)' }}>
+              <span style={{ color: C.dim, fontFamily: "'IBM Plex Mono'", fontSize: 12 }}>TAP TO LOAD TRACK</span>
+            </label>
+          )}
         </div>
 
         {/* Overview waveform (mini) */}
@@ -1060,18 +1065,20 @@ export default function DJTrainer() {
             className="rounded flex items-center justify-center touch-target"
             style={{ width: 42, height: 36, background: '#1a1a1e', border: `1px solid ${C.cyan}`, color: C.cyan, fontFamily: 'Oxanium', fontWeight: 700, fontSize: 9, letterSpacing: 1 }}>
             SYNC</button>
-          <button onClick={() => fileRef.current?.click()}
+          <label htmlFor={`file-${id}`}
             onMouseEnter={() => showHint('LOAD a track. BPM is auto-detected.')}
-            className="rounded flex items-center justify-center touch-target"
+            className="rounded flex items-center justify-center touch-target cursor-pointer"
             style={{ width: 42, height: 36, background: '#1a1a1e', border: `1px solid ${C.edge}`, color: C.dim, fontFamily: 'Oxanium', fontSize: 9 }}>
-            LOAD</button>
+            LOAD
+            <input id={`file-${id}`} type="file" accept="audio/*,.mp3,.wav,.m4a,.aac,.ogg,.flac,.mp4"
+              style={{ position: 'absolute', width: 1, height: 1, opacity: 0, overflow: 'hidden', pointerEvents: 'none' }}
+              onChange={e => { const f = e.target.files?.[0]; if (f) { loadFile(id, f); e.target.value = ''; } }} />
+          </label>
           <button onClick={() => ejectDeck(id)}
             onMouseEnter={() => showHint('EJECT: unload the track and clear all cue points.')}
             className="rounded flex items-center justify-center"
             style={{ width: 30, height: 36, background: '#1a1a1e', border: `1px solid ${C.edge}`, color: C.dim, fontFamily: 'Oxanium', fontSize: 8 }}>
             {'\u23CF'}</button>
-          <input ref={fileRef} type="file" accept="audio/*" className="hidden"
-            onChange={e => { const f = e.target.files?.[0]; if (f) loadFile(id, f); }} />
         </div>
 
         {/* Hot cues — tap=set/jump, double-tap=clear */}

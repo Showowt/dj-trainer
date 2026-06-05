@@ -690,9 +690,21 @@ export default function DJTrainer() {
     el.addEventListener('pointercancel', up);
   };
 
-  // ─── hot cues ───
-  const hotCuePress = (id: DeckId, idx: number): void => {
+  // ─── hot cues (double-tap to clear — works on every device) ───
+  const lastHcTap = useRef<Record<string, number>>({});
+  const hotCueTap = (id: DeckId, idx: number): void => {
     const a = ensure(); const d = a.decks[id]; if (!d.buffer) return;
+    const key = `${id}${idx}`;
+    const now = Date.now();
+    const last = lastHcTap.current[key] || 0;
+    if (now - last < 350 && d.hotCues[idx] !== null) {
+      // Double-tap on set cue → clear it
+      d.hotCues[idx] = null;
+      setters[id](s => { const hc = [...s.hotCues]; hc[idx] = null; return { ...s, hotCues: hc }; });
+      lastHcTap.current[key] = 0;
+      return;
+    }
+    lastHcTap.current[key] = now;
     if (d.hotCues[idx] === null) {
       const p = posOf(d); d.hotCues[idx] = p;
       setters[id](s => { const hc = [...s.hotCues]; hc[idx] = p; return { ...s, hotCues: hc }; });
@@ -703,11 +715,6 @@ export default function DJTrainer() {
       startSrc(a, d, id);
       setters[id](s => ({ ...s, playing: true, pos: target }));
     }
-  };
-  const hotCueClear = (id: DeckId, idx: number): void => {
-    if (!audio.current) return;
-    audio.current.decks[id].hotCues[idx] = null;
-    setters[id](s => { const hc = [...s.hotCues]; hc[idx] = null; return { ...s, hotCues: hc }; });
   };
 
   // ─── loops ───
@@ -726,6 +733,34 @@ export default function DJTrainer() {
     d.loopActive = !d.loopActive;
     setters[id](s => ({ ...s, loopActive: !s.loopActive }));
   };
+  const clearLoop = (id: DeckId): void => {
+    if (!audio.current) return; const d = audio.current.decks[id];
+    d.loopIn = null; d.loopOut = null; d.loopActive = false;
+    setters[id](s => ({ ...s, loopIn: null, loopOut: null, loopActive: false }));
+  };
+  const beatLoop = (id: DeckId, beats: number): void => {
+    if (!audio.current) return; const d = audio.current.decks[id];
+    const st = id === 'A' ? deckARef.current : deckBRef.current;
+    const bpm = parseFloat(st.bpm);
+    if (!bpm || !d.buffer) return;
+    const p = posOf(d); const dur = beats * 60 / bpm;
+    d.loopIn = p; d.loopOut = p + dur; d.loopActive = true;
+    setters[id](s => ({ ...s, loopIn: p, loopOut: p + dur, loopActive: true }));
+  };
+  const halveLoop = (id: DeckId): void => {
+    if (!audio.current) return; const d = audio.current.decks[id];
+    if (d.loopIn === null || d.loopOut === null) return;
+    const half = d.loopIn + (d.loopOut - d.loopIn) / 2;
+    d.loopOut = half;
+    setters[id](s => s.loopIn !== null && s.loopOut !== null ? { ...s, loopOut: s.loopIn + (s.loopOut - s.loopIn) / 2 } : s);
+  };
+  const doubleLoop = (id: DeckId): void => {
+    if (!audio.current) return; const d = audio.current.decks[id];
+    if (d.loopIn === null || d.loopOut === null) return;
+    const dbl = d.loopIn + (d.loopOut - d.loopIn) * 2;
+    d.loopOut = Math.min(d.dur, dbl);
+    setters[id](s => s.loopIn !== null && s.loopOut !== null ? { ...s, loopOut: Math.min(s.dur, s.loopIn + (s.loopOut - s.loopIn) * 2) } : s);
+  };
 
   // ─── beat jump ───
   const beatJump = (id: DeckId, beats: number): void => {
@@ -735,6 +770,28 @@ export default function DJTrainer() {
     const bpm = parseFloat(st.bpm);
     if (!bpm || !d.buffer) return;
     seekDeck(id, posOf(d) + beats * (60 / bpm));
+  };
+
+  // ─── sync (match this deck's tempo to the other deck's adjusted BPM) ───
+  const syncDeck = (id: DeckId): void => {
+    const other = id === 'A' ? deckB : deckA;
+    const self = id === 'A' ? deckA : deckB;
+    const otherAdj = adjBpm(other);
+    const selfBpm = parseFloat(self.bpm);
+    if (!otherAdj || !selfBpm) return;
+    const pctNeeded = (otherAdj / selfBpm - 1) * 100;
+    const v = 0.5 - pctNeeded / (2 * self.range);
+    if (v >= 0 && v <= 1) setTempo(id, v);
+  };
+
+  // ─── eject (unload track) ───
+  const ejectDeck = (id: DeckId): void => {
+    if (!audio.current) return; const d = audio.current.decks[id];
+    if (d.playing) { d.stopping = true; try { d.src?.stop(); } catch { /* ok */ } d.playing = false; }
+    d.buffer = null; d.dur = 0; d.startOffset = 0; d.cue = 0;
+    d.hotCues = [null, null, null, null]; d.loopIn = null; d.loopOut = null;
+    d.loopActive = false; d.cuePreview = false; d.braking = false;
+    setters[id](() => mkDeckState());
   };
 
   // ─── bpm calc (matches inverted CDJ tempo fader) ───
@@ -820,8 +877,8 @@ export default function DJTrainer() {
       switch (e.key) {
         case 'q': e.preventDefault(); cuePress('A'); break;
         case 'w': e.preventDefault(); if (!e.repeat) { audio.current?.decks.A.playing ? pauseDeck('A') : playDeck('A'); } break;
-        case '1': hotCuePress('A', 0); break; case '2': hotCuePress('A', 1); break;
-        case '3': hotCuePress('A', 2); break; case '4': hotCuePress('A', 3); break;
+        case '1': hotCueTap('A', 0); break; case '2': hotCueTap('A', 1); break;
+        case '3': hotCueTap('A', 2); break; case '4': hotCueTap('A', 3); break;
         case 'a': setLoopInPoint('A'); break;
         case 's': e.preventDefault(); setLoopOutPoint('A'); break;
         case 'd': e.preventDefault(); toggleLoop('A'); break;
@@ -831,8 +888,8 @@ export default function DJTrainer() {
         case 'v': e.preventDefault(); beatJump('A', 4); break;
         case '[': e.preventDefault(); cuePress('B'); break;
         case ']': e.preventDefault(); if (!e.repeat) { audio.current?.decks.B.playing ? pauseDeck('B') : playDeck('B'); } break;
-        case '7': hotCuePress('B', 0); break; case '8': hotCuePress('B', 1); break;
-        case '9': hotCuePress('B', 2); break; case '0': hotCuePress('B', 3); break;
+        case '7': hotCueTap('B', 0); break; case '8': hotCueTap('B', 1); break;
+        case '9': hotCueTap('B', 2); break; case '0': hotCueTap('B', 3); break;
         case 'l': setLoopInPoint('B'); break;
         case ';': setLoopOutPoint('B'); break;
         case "'": toggleLoop('B'); break;
@@ -998,49 +1055,104 @@ export default function DJTrainer() {
               fontFamily: 'Oxanium', fontWeight: 700, fontSize: 17,
               boxShadow: st.playing ? `0 0 12px ${C.green}66` : `0 0 4px ${C.green}22`,
             }}>{st.playing ? '\u275A\u275A' : '\u25B6'}</button>
+          <button onClick={() => syncDeck(id)}
+            onMouseEnter={() => showHint('SYNC: instantly matches this deck\u2019s tempo to the other deck\u2019s BPM. Train without it to build real skill.')}
+            className="rounded flex items-center justify-center touch-target"
+            style={{ width: 42, height: 36, background: '#1a1a1e', border: `1px solid ${C.cyan}`, color: C.cyan, fontFamily: 'Oxanium', fontWeight: 700, fontSize: 9, letterSpacing: 1 }}>
+            SYNC</button>
           <button onClick={() => fileRef.current?.click()}
             onMouseEnter={() => showHint('LOAD a track. BPM is auto-detected.')}
             className="rounded flex items-center justify-center touch-target"
-            style={{ width: 48, height: 48, background: '#1a1a1e', border: `1px solid ${C.edge}`, color: C.dim, fontFamily: 'Oxanium', fontSize: 9 }}>
-            <span style={{ fontSize: 14 }}>{'\u2913'}</span>
-          </button>
+            style={{ width: 42, height: 36, background: '#1a1a1e', border: `1px solid ${C.edge}`, color: C.dim, fontFamily: 'Oxanium', fontSize: 9 }}>
+            LOAD</button>
+          <button onClick={() => ejectDeck(id)}
+            onMouseEnter={() => showHint('EJECT: unload the track and clear all cue points.')}
+            className="rounded flex items-center justify-center"
+            style={{ width: 30, height: 36, background: '#1a1a1e', border: `1px solid ${C.edge}`, color: C.dim, fontFamily: 'Oxanium', fontSize: 8 }}>
+            {'\u23CF'}</button>
           <input ref={fileRef} type="file" accept="audio/*" className="hidden"
             onChange={e => { const f = e.target.files?.[0]; if (f) loadFile(id, f); }} />
         </div>
 
-        {/* Hot cues + loop + beat jump */}
+        {/* Hot cues — tap=set/jump, double-tap=clear */}
         <div className="flex items-center gap-1 justify-center flex-wrap">
           {st.hotCues.map((hc, i) => (
-            <button key={i} onClick={() => hotCuePress(id, i)}
-              onContextMenu={e => { e.preventDefault(); hotCueClear(id, i); }}
-              className="rounded flex items-center justify-center touch-target"
+            <button key={i} onClick={() => hotCueTap(id, i)}
+              onMouseEnter={() => showHint(`HOT CUE ${HC_LABELS[i]}: ${hc !== null ? `Set at ${fmtTime(hc)}. Tap=jump. Double-tap=clear.` : 'Tap to save current position.'}`)}
+              className="rounded flex items-center justify-center touch-target relative"
               style={{
-                width: 30, height: 28, fontSize: 9, fontFamily: 'Oxanium', fontWeight: 700,
+                width: 34, height: 30, fontSize: 10, fontFamily: 'Oxanium', fontWeight: 700,
                 background: hc !== null ? `${HC_COLORS[i]}18` : '#1a1a1e',
                 border: `2px solid ${hc !== null ? HC_COLORS[i] : C.edge}`,
                 color: hc !== null ? HC_COLORS[i] : C.dim,
-              }}>{HC_LABELS[i]}</button>
+                boxShadow: hc !== null ? `0 0 6px ${HC_COLORS[i]}33` : 'none',
+              }}>
+              {HC_LABELS[i]}
+              {hc !== null && <span className="absolute" style={{ top: -2, right: -2, width: 8, height: 8, borderRadius: '50%', background: HC_COLORS[i] }} />}
+            </button>
           ))}
-          <div style={{ width: 1, height: 20, background: C.edge }} />
-          <button onClick={() => setLoopInPoint(id)} className="rounded flex items-center justify-center"
-            style={{ width: 28, height: 28, fontSize: 7, fontFamily: 'Oxanium', fontWeight: 600,
+        </div>
+
+        {/* Loops — manual IN/OUT + beat-sized + halve/double + clear */}
+        <div className="flex items-center gap-1 justify-center flex-wrap">
+          <button onClick={() => setLoopInPoint(id)}
+            onMouseEnter={() => showHint('LOOP IN: set the start point of a manual loop.')}
+            className="rounded flex items-center justify-center"
+            style={{ height: 26, padding: '0 6px', fontSize: 7, fontFamily: 'Oxanium', fontWeight: 600,
               background: st.loopIn !== null ? `${C.green}18` : '#1a1a1e',
               border: `1px solid ${st.loopIn !== null ? C.green : C.edge}`, color: st.loopIn !== null ? C.green : C.dim }}>IN</button>
-          <button onClick={() => setLoopOutPoint(id)} className="rounded flex items-center justify-center"
-            style={{ width: 28, height: 28, fontSize: 7, fontFamily: 'Oxanium', fontWeight: 600,
+          <button onClick={() => setLoopOutPoint(id)}
+            onMouseEnter={() => showHint('LOOP OUT: set the end point and activate the loop.')}
+            className="rounded flex items-center justify-center"
+            style={{ height: 26, padding: '0 6px', fontSize: 7, fontFamily: 'Oxanium', fontWeight: 600,
               background: st.loopOut !== null ? `${C.green}18` : '#1a1a1e',
               border: `1px solid ${st.loopOut !== null ? C.green : C.edge}`, color: st.loopOut !== null ? C.green : C.dim }}>OUT</button>
-          <button onClick={() => toggleLoop(id)} className="rounded flex items-center justify-center"
-            style={{ width: 32, height: 28, fontSize: 7, fontFamily: 'Oxanium', fontWeight: 600,
+          <div style={{ width: 1, height: 18, background: C.edge }} />
+          {/* Beat-sized auto loops */}
+          {[0.5, 1, 2, 4, 8].map(b => (
+            <button key={b} onClick={() => beatLoop(id, b)}
+              onMouseEnter={() => showHint(`Auto-loop ${b} beat${b !== 1 ? 's' : ''} from current position.`)}
+              className="rounded flex items-center justify-center"
+              style={{ height: 26, padding: '0 4px', fontSize: 8, fontFamily: "'IBM Plex Mono'", fontWeight: 500,
+                background: '#1a1a1e', border: `1px solid ${C.edge}`, color: bpmNum > 0 ? C.text : C.dim }}>
+              {b < 1 ? '\u00BD' : b}</button>
+          ))}
+          <div style={{ width: 1, height: 18, background: C.edge }} />
+          {/* Halve / double / toggle / clear */}
+          <button onClick={() => halveLoop(id)}
+            onMouseEnter={() => showHint('Halve loop length.')}
+            className="rounded flex items-center justify-center"
+            style={{ height: 26, padding: '0 4px', fontSize: 9, fontFamily: 'Oxanium',
+              background: '#1a1a1e', border: `1px solid ${st.loopActive ? C.green : C.edge}`, color: st.loopActive ? C.green : C.dim }}>/2</button>
+          <button onClick={() => doubleLoop(id)}
+            onMouseEnter={() => showHint('Double loop length.')}
+            className="rounded flex items-center justify-center"
+            style={{ height: 26, padding: '0 4px', fontSize: 9, fontFamily: 'Oxanium',
+              background: '#1a1a1e', border: `1px solid ${st.loopActive ? C.green : C.edge}`, color: st.loopActive ? C.green : C.dim }}>x2</button>
+          <button onClick={() => toggleLoop(id)}
+            onMouseEnter={() => showHint('Toggle loop on/off.')}
+            className="rounded flex items-center justify-center"
+            style={{ height: 26, padding: '0 5px', fontSize: 7, fontFamily: 'Oxanium', fontWeight: 700,
               background: st.loopActive ? `${C.green}22` : '#1a1a1e',
-              border: `1px solid ${st.loopActive ? C.green : C.edge}`, color: st.loopActive ? C.green : C.dim }}>
-            {st.loopActive ? '\u27F2ON' : 'LOOP'}</button>
-          <div style={{ width: 1, height: 20, background: C.edge }} />
-          {/* Beat jump */}
-          {[{ b: -4, l: '\u00AB4' }, { b: -1, l: '\u2039' }, { b: 1, l: '\u203A' }, { b: 4, l: '4\u00BB' }].map(({ b, l }) => (
+              border: `1px solid ${st.loopActive ? C.green : C.edge}`, color: st.loopActive ? C.green : C.dim,
+              boxShadow: st.loopActive ? `0 0 6px ${C.green}33` : 'none' }}>
+            {st.loopActive ? '\u27F2 ON' : 'LOOP'}</button>
+          {(st.loopIn !== null || st.loopOut !== null) && (
+            <button onClick={() => clearLoop(id)}
+              onMouseEnter={() => showHint('Clear loop points.')}
+              className="rounded flex items-center justify-center"
+              style={{ height: 26, padding: '0 4px', fontSize: 8, fontFamily: 'Oxanium',
+                background: '#1a1a1e', border: `1px solid ${C.red}44`, color: C.red }}>CLR</button>
+          )}
+        </div>
+
+        {/* Beat jump */}
+        <div className="flex items-center gap-1 justify-center">
+          <span style={{ fontSize: 7, color: C.dim, fontFamily: 'Oxanium', letterSpacing: 1 }}>JUMP</span>
+          {[{ b: -8, l: '\u00AB8' }, { b: -4, l: '\u00AB4' }, { b: -1, l: '\u2039' }, { b: 1, l: '\u203A' }, { b: 4, l: '4\u00BB' }, { b: 8, l: '8\u00BB' }].map(({ b, l }) => (
             <button key={b} onClick={() => beatJump(id, b)} className="rounded flex items-center justify-center"
-              onMouseEnter={() => showHint(`Beat jump: skip ${Math.abs(b)} beat${Math.abs(b) > 1 ? 's' : ''} ${b > 0 ? 'forward' : 'back'}. Needs BPM.`)}
-              style={{ width: 24, height: 28, fontSize: 9, fontFamily: 'Oxanium',
+              onMouseEnter={() => showHint(`Beat jump: skip ${Math.abs(b)} beat${Math.abs(b) > 1 ? 's' : ''} ${b > 0 ? 'forward' : 'back'}.`)}
+              style={{ width: 26, height: 24, fontSize: 8, fontFamily: 'Oxanium',
                 background: '#1a1a1e', border: `1px solid ${C.edge}`, color: bpmNum > 0 ? C.text : C.dim }}>{l}</button>
           ))}
         </div>
@@ -1218,60 +1330,81 @@ export default function DJTrainer() {
           </div>
         )}
 
-        {/* Learn hint */}
-        {learn && (
-          <div className="rounded mt-1.5 px-3 py-2" style={{ background: C.panelHi, border: `1px solid ${C.cyanDim}`, minHeight: 36 }}>
-            <span style={{ color: C.cyan, fontWeight: 700, fontSize: 10, letterSpacing: 2 }}>LEARN {'\u25B8'} </span>
-            <span style={{ color: hint ? C.text : C.dim, fontSize: isMobile ? 11 : 12, fontFamily: "'IBM Plex Mono'", lineHeight: 1.5 }}>
-              {hint || 'Hover (or tap) any control to learn what it does.'}
-            </span>
-          </div>
-        )}
-
-        {/* Guide */}
+        {/* Guide overlay */}
         {showGuide && (
-          <div className="rounded mt-1.5 p-3" style={{ background: C.panel, border: `1px solid ${C.edge}` }}>
-            <div className="flex items-center justify-between mb-1">
-              <span style={{ fontWeight: 700, color: C.cyan, letterSpacing: 2, fontSize: 11 }}>FIRST MIX &mdash; 6 STEPS</span>
-              <span style={{ fontFamily: "'IBM Plex Mono'", color: C.dim, fontSize: 10 }}>{guideStep + 1}/6</span>
-            </div>
-            <div style={{ fontSize: 12, fontFamily: "'IBM Plex Mono'", color: C.text, lineHeight: 1.6 }}>
-              <span style={{ color: C.orange, fontWeight: 600 }}>Step {guideStep + 1}. </span>{GUIDE[guideStep]}
-            </div>
-            <div className="flex gap-2 mt-2 items-center">
-              <button onClick={() => setGuideStep(s => Math.max(0, s - 1))}
-                style={{ background: C.panelHi, border: `1px solid ${C.edge}`, color: C.text, padding: '4px 10px', borderRadius: 4, fontSize: 11 }}>{'\u2190'}</button>
-              <button onClick={() => setGuideStep(s => Math.min(5, s + 1))}
-                style={{ background: C.cyanDim, border: `1px solid ${C.cyan}`, color: C.cyan, padding: '4px 10px', borderRadius: 4, fontSize: 11 }}>{'\u2192'}</button>
-              <div className="flex gap-1 ml-1">
-                {GUIDE.map((_, i) => (
-                  <div key={i} onClick={() => setGuideStep(i)} className="cursor-pointer rounded-full"
-                    style={{ width: 7, height: 7, background: i === guideStep ? C.cyan : '#2a2a32' }} />
-                ))}
+          <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.7)' }}
+            onClick={() => setShowGuide(false)}>
+            <div className="rounded-lg p-4" style={{ background: C.panel, border: `1px solid ${C.edge}`, maxWidth: 500, width: '90%' }}
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-2">
+                <span style={{ fontWeight: 700, color: C.cyan, letterSpacing: 2, fontSize: 12 }}>FIRST MIX &mdash; 6 STEPS</span>
+                <button onClick={() => setShowGuide(false)} style={{ color: C.dim, fontSize: 18, background: 'none', border: 'none', cursor: 'pointer' }}>&times;</button>
+              </div>
+              <div style={{ fontSize: 13, fontFamily: "'IBM Plex Mono'", color: C.text, lineHeight: 1.7, minHeight: 44 }}>
+                <span style={{ color: C.orange, fontWeight: 600 }}>Step {guideStep + 1}. </span>{GUIDE[guideStep]}
+              </div>
+              <div className="flex gap-2 mt-3 items-center">
+                <button onClick={() => setGuideStep(s => Math.max(0, s - 1))}
+                  style={{ background: C.panelHi, border: `1px solid ${C.edge}`, color: C.text, padding: '6px 14px', borderRadius: 4, fontSize: 12 }}>{'\u2190'} Back</button>
+                <button onClick={() => setGuideStep(s => Math.min(5, s + 1))}
+                  style={{ background: C.cyanDim, border: `1px solid ${C.cyan}`, color: C.cyan, padding: '6px 14px', borderRadius: 4, fontSize: 12 }}>Next {'\u2192'}</button>
+                <div className="flex gap-1 ml-2">
+                  {GUIDE.map((_, i) => (
+                    <div key={i} onClick={() => setGuideStep(i)} className="cursor-pointer rounded-full"
+                      style={{ width: 8, height: 8, background: i === guideStep ? C.cyan : '#2a2a32' }} />
+                  ))}
+                </div>
               </div>
             </div>
           </div>
         )}
 
-        {/* Keyboard shortcuts (desktop only) */}
+        {/* Keyboard shortcuts overlay (desktop only) */}
         {showKeys && !isMobile && (
-          <div className="rounded mt-1.5 p-3" style={{ background: C.panel, border: `1px solid ${C.edge}` }}>
-            <div style={{ fontWeight: 700, color: C.cyan, letterSpacing: 2, marginBottom: 4, fontSize: 10 }}>KEYBOARD</div>
-            <div className="grid grid-cols-2 gap-3" style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10, color: C.dim, lineHeight: 1.8 }}>
-              <div>
-                <div style={{ color: C.cyan, fontWeight: 600 }}>DECK A</div>
-                <div><b>Q</b> CUE (hold) &middot; <b>W</b> PLAY &middot; <b>1-4</b> Hot Cues</div>
-                <div><b>A/S/D</b> Loop In/Out/Reloop &middot; <b>Z/X/C/V</b> Beat Jump \u00B11/\u00B14</div>
+          <div style={{ position: 'fixed', inset: 0, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.7)' }}
+            onClick={() => setShowKeys(false)}>
+            <div className="rounded-lg p-4" style={{ background: C.panel, border: `1px solid ${C.edge}`, maxWidth: 500, width: '90%' }}
+              onClick={e => e.stopPropagation()}>
+              <div className="flex items-center justify-between mb-2">
+                <span style={{ fontWeight: 700, color: C.cyan, letterSpacing: 2, fontSize: 12 }}>KEYBOARD SHORTCUTS</span>
+                <button onClick={() => setShowKeys(false)} style={{ color: C.dim, fontSize: 18, background: 'none', border: 'none', cursor: 'pointer' }}>&times;</button>
               </div>
-              <div>
-                <div style={{ color: C.orange, fontWeight: 600 }}>DECK B</div>
-                <div><b>[</b> CUE (hold) &middot; <b>]</b> PLAY &middot; <b>7-0</b> Hot Cues</div>
-                <div><b>L/;/&apos;</b> Loop &middot; <b>,/./</b> Beat Jump</div>
+              <div className="grid grid-cols-2 gap-4" style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: C.dim, lineHeight: 2 }}>
+                <div>
+                  <div style={{ color: C.cyan, fontWeight: 600, marginBottom: 2 }}>DECK A</div>
+                  <div><b>Q</b> CUE (hold to preview)</div>
+                  <div><b>W</b> PLAY / PAUSE</div>
+                  <div><b>1 2 3 4</b> Hot Cues A-D</div>
+                  <div><b>A</b> Loop In &middot; <b>S</b> Loop Out &middot; <b>D</b> Reloop</div>
+                  <div><b>Z X C V</b> Beat Jump \u00B11 / \u00B14</div>
+                </div>
+                <div>
+                  <div style={{ color: C.orange, fontWeight: 600, marginBottom: 2 }}>DECK B</div>
+                  <div><b>[</b> CUE (hold to preview)</div>
+                  <div><b>]</b> PLAY / PAUSE</div>
+                  <div><b>7 8 9 0</b> Hot Cues A-D</div>
+                  <div><b>L</b> Loop In &middot; <b>;</b> Loop Out &middot; <b>&apos;</b> Reloop</div>
+                  <div><b>, . /</b> Beat Jump</div>
+                </div>
               </div>
             </div>
           </div>
         )}
       </div>
+
+      {/* Learn hint — fixed bottom bar, always visible when on */}
+      {learn && (
+        <div style={{
+          position: 'fixed', bottom: 0, left: 0, right: 0, zIndex: 40,
+          background: `${C.panelHi}ee`, borderTop: `1px solid ${C.cyanDim}`,
+          padding: '6px 12px', backdropFilter: 'blur(8px)', WebkitBackdropFilter: 'blur(8px)',
+        }}>
+          <span style={{ color: C.cyan, fontWeight: 700, fontSize: 9, letterSpacing: 2 }}>LEARN {'\u25B8'} </span>
+          <span style={{ color: hint ? C.text : C.dim, fontSize: isMobile ? 10 : 11, fontFamily: "'IBM Plex Mono'", lineHeight: 1.4 }}>
+            {hint || 'Tap any control to learn what it does on the real CDJ-2000NXS / DJM-900NXS.'}
+          </span>
+        </div>
+      )}
     </div>
   );
 }

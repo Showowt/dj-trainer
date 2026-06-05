@@ -162,20 +162,54 @@ function Knob({ value, onChange, label, color = C.cyan, size = 48, hint, onHint 
   value: number; onChange: (v: number) => void; label: string;
   color?: string; size?: number; hint?: string; onHint?: (h: string) => void;
 }) {
-  const drag = useRef<{ y: number; v: number; id: number } | null>(null);
-  const angle = -135 + value * 270;
+  const drag = useRef<{ cx: number; cy: number; lastAng: number; id: number } | null>(null);
+  const valRef = useRef(value); valRef.current = value;
+  const angDeg = -135 + value * 270;
+  // Arc path for value indicator
+  const r = size / 2 - 3;
+  const cx = size / 2, cy = size / 2;
+  const toRad = (d: number) => (d - 90) * Math.PI / 180;
+  const sa = toRad(-135), ea = toRad(angDeg);
+  const x1 = cx + r * Math.cos(sa), y1 = cy + r * Math.sin(sa);
+  const x2 = cx + r * Math.cos(ea), y2 = cy + r * Math.sin(ea);
+  const arc = value > 0.001 ? `M ${x1} ${y1} A ${r} ${r} 0 ${value > 0.5 ? 1 : 0} 1 ${x2} ${y2}` : '';
+
   return (
     <div className="flex flex-col items-center select-none" style={{ width: size + 8 }} onMouseEnter={() => hint && onHint?.(hint)}>
-      <div className="rounded-full relative cursor-ns-resize" style={{ width: size, height: size, touchAction: 'none',
+      <div className="rounded-full relative cursor-grab active:cursor-grabbing" style={{ width: size, height: size, touchAction: 'none',
         background: 'radial-gradient(circle at 35% 30%, #3a3a44, #141418 70%)', border: `1px solid ${C.edge}`,
-        boxShadow: 'inset 0 2px 4px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5)' }}
-        onPointerDown={e => { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); drag.current = { y: e.clientY, v: value, id: e.pointerId }; }}
-        onPointerMove={e => { if (!drag.current || e.pointerId !== drag.current.id) return; onChange(Math.max(0, Math.min(1, drag.current.v + (drag.current.y - e.clientY) / 140))); }}
-        onPointerUp={e => { if (drag.current?.id === e.pointerId) drag.current = null; }}
-        onPointerCancel={e => { if (drag.current?.id === e.pointerId) drag.current = null; }}
+        boxShadow: 'inset 0 2px 4px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5)', transition: 'box-shadow 0.15s' }}
+        onPointerDown={e => {
+          e.preventDefault(); e.stopPropagation();
+          const el = e.currentTarget as HTMLElement;
+          el.setPointerCapture(e.pointerId);
+          el.style.boxShadow = `inset 0 2px 4px rgba(0,0,0,.6), 0 0 8px ${color}33`;
+          const rect = el.getBoundingClientRect();
+          drag.current = { cx: rect.left + rect.width / 2, cy: rect.top + rect.height / 2, lastAng: Math.atan2(e.clientY - (rect.top + rect.height / 2), e.clientX - (rect.left + rect.width / 2)), id: e.pointerId };
+        }}
+        onPointerMove={e => {
+          if (!drag.current || e.pointerId !== drag.current.id) return;
+          const ang = Math.atan2(e.clientY - drag.current.cy, e.clientX - drag.current.cx);
+          let dA = ang - drag.current.lastAng;
+          if (dA > Math.PI) dA -= 2 * Math.PI; if (dA < -Math.PI) dA += 2 * Math.PI;
+          drag.current.lastAng = ang;
+          let nv = Math.max(0, Math.min(1, valRef.current + dA / (Math.PI * 1.5)));
+          // Center detent with haptic
+          if (Math.abs(nv - 0.5) < 0.018 && Math.abs(valRef.current - 0.5) >= 0.018) {
+            nv = 0.5; try { navigator.vibrate?.(4); } catch { /* ok */ }
+          } else if (Math.abs(nv - 0.5) < 0.018) nv = 0.5;
+          onChange(nv);
+        }}
+        onPointerUp={e => { if (drag.current?.id === e.pointerId) { drag.current = null; (e.currentTarget as HTMLElement).style.boxShadow = 'inset 0 2px 4px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5)'; } }}
+        onPointerCancel={e => { if (drag.current?.id === e.pointerId) { drag.current = null; (e.currentTarget as HTMLElement).style.boxShadow = 'inset 0 2px 4px rgba(0,0,0,.6), 0 1px 2px rgba(0,0,0,.5)'; } }}
         onDoubleClick={() => onChange(0.5)} title={label}>
-        <div className="absolute left-1/2 top-1/2" style={{ width: 2, height: size * 0.4, background: color, borderRadius: 2,
-          transform: `translate(-50%,-100%) rotate(${angle}deg)`, transformOrigin: 'bottom center', boxShadow: `0 0 4px ${color}` }} />
+        {/* Value arc */}
+        <svg className="absolute inset-0" width={size} height={size} style={{ pointerEvents: 'none' }}>
+          {arc && <path d={arc} stroke={color} strokeWidth={2.5} fill="none" opacity={0.5} strokeLinecap="round" />}
+        </svg>
+        {/* Indicator line */}
+        <div className="absolute left-1/2 top-1/2" style={{ width: 2, height: size * 0.35, background: color, borderRadius: 2,
+          transform: `translate(-50%,-100%) rotate(${angDeg}deg)`, transformOrigin: 'bottom center', boxShadow: `0 0 5px ${color}` }} />
       </div>
       <span style={{ color: C.dim, fontSize: 9, marginTop: 3, letterSpacing: 1, fontFamily: 'Oxanium' }}>{label}</span>
     </div>
@@ -190,14 +224,31 @@ function Fader({ value, onChange, label, color = C.cyan, height = 130, center, h
   return (
     <div className="flex flex-col items-center select-none" onMouseEnter={() => hint && onHint?.(hint)}>
       <div className="relative" style={{ height, width: 36, touchAction: 'none' }}
-        onPointerDown={e => { e.preventDefault(); e.stopPropagation(); (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId); drag.current = { y: e.clientY, v: value, id: e.pointerId }; }}
-        onPointerMove={e => { if (!drag.current || e.pointerId !== drag.current.id) return; onChange(Math.max(0, Math.min(1, drag.current.v + (drag.current.y - e.clientY) / height))); }}
+        onPointerDown={e => {
+          e.preventDefault(); e.stopPropagation();
+          (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+          drag.current = { y: e.clientY, v: value, id: e.pointerId };
+        }}
+        onPointerMove={e => {
+          if (!drag.current || e.pointerId !== drag.current.id) return;
+          let nv = Math.max(0, Math.min(1, drag.current.v + (drag.current.y - e.clientY) / height));
+          // Detent at center for tempo faders
+          if (center && Math.abs(nv - 0.5) < 0.012 && Math.abs(drag.current.v + (drag.current.y - e.clientY) / height - 0.5) >= 0.012) {
+            nv = 0.5; try { navigator.vibrate?.(4); } catch { /* ok */ }
+          } else if (center && Math.abs(nv - 0.5) < 0.012) nv = 0.5;
+          onChange(nv);
+        }}
         onPointerUp={e => { if (drag.current?.id === e.pointerId) drag.current = null; }}
         onPointerCancel={e => { if (drag.current?.id === e.pointerId) drag.current = null; }}>
+        {/* Track */}
         <div className="absolute left-1/2 top-0 bottom-0" style={{ width: 4, transform: 'translateX(-50%)', background: '#0a0a0c', borderRadius: 3, border: `1px solid ${C.edge}` }} />
+        {/* Track fill */}
+        <div className="absolute left-1/2 bottom-0" style={{ width: 4, transform: 'translateX(-50%)', height: `${value * 100}%`, background: color, opacity: 0.25, borderRadius: 3 }} />
         {center && <div className="absolute left-1/2 top-1/2" style={{ width: 14, height: 1, background: C.dim, transform: 'translate(-50%,-50%)' }} />}
+        {/* Handle */}
         <div className="absolute left-1/2" style={{ width: 34, height: 22, transform: 'translateX(-50%)', bottom: `calc(${value * 100}% - 11px)`,
-          background: 'linear-gradient(180deg,#48484f,#1a1a1e)', borderRadius: 4, border: `1px solid ${C.edge}`, boxShadow: '0 0 5px rgba(0,0,0,.6)' }}>
+          background: 'linear-gradient(180deg,#48484f,#1a1a1e)', borderRadius: 4, border: `1px solid ${C.edge}`, boxShadow: '0 0 5px rgba(0,0,0,.6)',
+          transition: 'box-shadow 0.1s' }}>
           <div style={{ height: 2, background: color, margin: '9px 4px', borderRadius: 2, boxShadow: `0 0 4px ${color}` }} />
         </div>
       </div>

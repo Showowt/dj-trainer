@@ -480,6 +480,7 @@ export default function DJTrainer() {
   const [vu, setVu] = useState({ A: 0, B: 0, M: 0 });
   const [mobileTab, setMobileTab] = useState<'A' | 'mix' | 'B'>('A');
   const [screenW, setScreenW] = useState(1200);
+  const [loading, setLoading] = useState<Record<DeckId, boolean>>({ A: false, B: false });
 
   const setters: Record<DeckId, React.Dispatch<React.SetStateAction<DeckState>>> = { A: setDeckA, B: setDeckB };
   const isMobile = screenW < 768;
@@ -555,6 +556,7 @@ export default function DJTrainer() {
 
   // ─── file loading with auto-BPM ───
   const loadFile = async (id: DeckId, file: File): Promise<void> => {
+    setLoading(l => ({ ...l, [id]: true }));
     const a = ensure();
     const arr = await file.arrayBuffer();
     const buf = await a.ctx.decodeAudioData(arr);
@@ -568,6 +570,7 @@ export default function DJTrainer() {
       ...mkDeckState(), name: file.name.replace(/\.[^.]+$/, ''),
       loaded: true, dur: buf.duration, peaks, bpm: bpm ? bpm.toFixed(1) : '',
     }));
+    setLoading(l => ({ ...l, [id]: false }));
   };
 
   // ─── transport ───
@@ -772,15 +775,27 @@ export default function DJTrainer() {
   };
 
   // ─── sync (match this deck's tempo to the other deck's adjusted BPM) ───
+  const [syncFlash, setSyncFlash] = useState<string | null>(null);
   const syncDeck = (id: DeckId): void => {
     const other = id === 'A' ? deckB : deckA;
     const self = id === 'A' ? deckA : deckB;
     const otherAdj = adjBpm(other);
     const selfBpm = parseFloat(self.bpm);
-    if (!otherAdj || !selfBpm) return;
+    if (!otherAdj || !selfBpm) {
+      setSyncFlash('Load tracks with BPM on both decks first');
+      setTimeout(() => setSyncFlash(null), 2000);
+      return;
+    }
     const pctNeeded = (otherAdj / selfBpm - 1) * 100;
     const v = 0.5 - pctNeeded / (2 * self.range);
-    if (v >= 0 && v <= 1) setTempo(id, v);
+    if (v < 0 || v > 1) {
+      setSyncFlash(`BPM difference too large for \u00B1${self.range}% range \u2014 widen the range or adjust manually`);
+      setTimeout(() => setSyncFlash(null), 3000);
+      return;
+    }
+    setTempo(id, v);
+    setSyncFlash(`Deck ${id} synced to ${otherAdj.toFixed(1)} BPM`);
+    setTimeout(() => setSyncFlash(null), 1500);
   };
 
   // ─── eject (unload track) ───
@@ -806,24 +821,33 @@ export default function DJTrainer() {
   useEffect(() => { drawOverview(cvsB.current, deckB); },
     [deckB.peaks, deckB.pos, deckB.dur, deckB.cue, deckB.hotCues, deckB.loopIn, deckB.loopOut, deckB.loopActive]);
 
-  // ─── effect: mixer ───
+  // ─── effect: mixer (DJM-900NXS accurate signal path) ───
   useEffect(() => {
     if (!audio.current) return;
     const a = audio.current;
-    const eq = (val: number) => (val - 0.5) * 2 * 26 * (val < 0.5 ? 1.6 : 0.23); // kill=-41dB, boost=+6dB (DJM-900 spec)
+    // EQ: -26dB kill (squared curve) to +6dB boost (linear) — matches DJM-900 isolator
+    const eq = (val: number): number => {
+      if (val >= 0.5) return (val - 0.5) * 12; // 0 to +6dB
+      const cut = (0.5 - val) * 2; // 0 to 1
+      return -32 * cut * cut; // squared: gentle near center, hard kill at edge
+    };
     const apply = (id: DeckId, ch: ChannelState) => {
       const d = a.decks[id];
       d.trim.gain.value = ch.trim * 1.4;
       d.low.gain.value = eq(ch.low); d.mid.gain.value = eq(ch.mid); d.hi.gain.value = eq(ch.hi);
+      // Color filter: LP sweep left, HP sweep right, dead zone at center
       if (Math.abs(ch.color - 0.5) < 0.04) { d.color.type = 'lowpass'; d.color.frequency.value = 22000; }
-      else if (ch.color < 0.5) { d.color.type = 'lowpass'; d.color.frequency.value = 200 + Math.pow(ch.color / 0.5, 2) * 12000; }
-      else { d.color.type = 'highpass'; d.color.frequency.value = 30 + Math.pow((ch.color - 0.5) / 0.5, 2) * 7000; }
-      d.chGain.gain.value = ch.fader;
+      else if (ch.color < 0.5) { d.color.type = 'lowpass'; d.color.frequency.value = 150 + Math.pow(ch.color / 0.5, 2) * 18000; }
+      else { d.color.type = 'highpass'; d.color.frequency.value = 20 + Math.pow((ch.color - 0.5) / 0.5, 2) * 8000; }
+      d.chGain.gain.value = ch.fader * ch.fader; // squared for logarithmic feel
     };
     apply('A', mix.chA); apply('B', mix.chB);
-    a.decks.A.xf.gain.value = Math.cos(mix.xfader * Math.PI / 2);
-    a.decks.B.xf.gain.value = Math.cos((1 - mix.xfader) * Math.PI / 2);
-    a.master.gain.value = mix.master;
+    // Crossfader: "THRU" curve — both channels at 0dB when centered (DJM default)
+    const x = mix.xfader;
+    a.decks.A.xf.gain.value = x < 0.5 ? 1 : Math.max(0, 2 * (1 - x));
+    a.decks.B.xf.gain.value = x > 0.5 ? 1 : Math.max(0, 2 * x);
+    // Master: squared for logarithmic fader feel
+    a.master.gain.value = mix.master * mix.master;
   }, [mix, initialized]);
 
   // ─── effect: animation frame ───
@@ -873,6 +897,7 @@ export default function DJTrainer() {
     if (!initialized) return;
     const onDown = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return; // don't hijack system shortcuts
       switch (e.key) {
         case 'q': e.preventDefault(); cuePress('A'); break;
         case 'w': e.preventDefault(); if (!e.repeat) { audio.current?.decks.A.playing ? pauseDeck('A') : playDeck('A'); } break;
@@ -945,6 +970,20 @@ export default function DJTrainer() {
   const showHint = (t: string) => { if (learn) setHint(t); };
   const bpmA = adjBpm(deckA), bpmB = adjBpm(deckB);
   const matched = bpmA !== null && bpmB !== null && Math.abs(bpmA - bpmB) < 0.15;
+
+  // Phase meter: how far apart the beats are in milliseconds
+  const phaseMs = (() => {
+    if (!bpmA || !bpmB) return null;
+    const phA = (deckA.pos * bpmA / 60) % 1;
+    const phB = (deckB.pos * bpmB / 60) % 1;
+    let diff = phA - phB;
+    if (diff > 0.5) diff -= 1;
+    if (diff < -0.5) diff += 1;
+    const avgBpm = (bpmA + bpmB) / 2;
+    return diff * (60000 / avgBpm); // convert beat fraction to ms
+  })();
+  const phaseAligned = phaseMs !== null && Math.abs(phaseMs) < 15;
+  const phaseTight = phaseMs !== null && Math.abs(phaseMs) < 30;
   const jogSize = isMobile ? 130 : 160;
   const knobSize = isMobile ? 38 : 46;
   const faderH = isMobile ? 90 : 115;
@@ -963,7 +1002,14 @@ export default function DJTrainer() {
     const bpmNum = parseFloat(st.bpm) || 0;
 
     return (
-      <div className="rounded-lg p-2 flex flex-col gap-1.5" style={{ background: C.panel, border: `1px solid ${C.edge}`, flex: 1, minWidth: isMobile ? 0 : 280 }}>
+      <div className="rounded-lg p-2 flex flex-col gap-1.5 relative" style={{ background: C.panel, border: `1px solid ${C.edge}`, flex: 1, minWidth: isMobile ? 0 : 280 }}>
+        {/* Loading overlay */}
+        {loading[id] && (
+          <div className="absolute inset-0 flex flex-col items-center justify-center rounded-lg" style={{ background: 'rgba(8,8,10,0.92)', zIndex: 20 }}>
+            <div style={{ fontFamily: 'Oxanium', color: C.cyan, fontSize: 14, fontWeight: 700, letterSpacing: 3 }}>LOADING</div>
+            <div style={{ fontFamily: "'IBM Plex Mono'", color: C.dim, fontSize: 10, marginTop: 4 }}>Decoding + analyzing BPM...</div>
+          </div>
+        )}
         {/* Header */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -1172,7 +1218,7 @@ export default function DJTrainer() {
                 <button key={r} onClick={() => setters[id](s => ({ ...s, range: r }))}
                   style={{ fontFamily: 'Oxanium', fontSize: 7, padding: '1px 3px', borderRadius: 3,
                     background: st.range === r ? C.cyanDim : '#1a1a1e', color: st.range === r ? C.cyan : C.dim, border: `1px solid ${C.edge}` }}>
-                  {r === 100 ? 'W' : `\u00B1${r}`}</button>
+                  {r === 100 ? 'WIDE' : `\u00B1${r}%`}</button>
               ))}
             </div>
             <Fader value={st.tempo} onChange={v => setTempo(id, v)} label="TEMPO" color={deckColor} height={faderH} center
@@ -1293,17 +1339,49 @@ export default function DJTrainer() {
           </div>
         </div>
 
-        {/* BoothMatch — always visible */}
-        <div className="rounded mb-1.5 px-2 py-1 flex items-center justify-center gap-3 flex-wrap"
-          style={{ background: C.panel, border: `1px solid ${matched ? C.green : C.edge}`, transition: 'border-color 0.3s' }}>
-          <span style={{ fontSize: 9, color: C.dim, letterSpacing: 2 }}>BOOTHMATCH</span>
-          <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 13, color: C.cyan }}>A {bpmA ? bpmA.toFixed(1) : '--'}</span>
-          <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 11, color: matched ? C.green : C.dim }}>
-            {bpmA && bpmB ? `\u0394${(bpmA - bpmB).toFixed(2)}` : '\u00B7'}
+        {/* BoothMatch + Phase Meter — always visible */}
+        <div className="rounded mb-1.5 px-2 py-1 flex items-center justify-center gap-2 flex-wrap"
+          style={{ background: C.panel, border: `1px solid ${matched && phaseAligned ? C.green : matched ? C.yellow : C.edge}`, transition: 'border-color 0.3s' }}>
+          <span style={{ fontSize: 8, color: C.dim, letterSpacing: 2 }}>BPM</span>
+          <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 12, color: C.cyan }}>A {bpmA ? bpmA.toFixed(1) : '--'}</span>
+          <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 10, color: matched ? C.green : C.dim }}>
+            {bpmA && bpmB ? `\u0394${Math.abs(bpmA - bpmB).toFixed(2)}` : '\u00B7'}
           </span>
-          <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 13, color: C.orange }}>B {bpmB ? bpmB.toFixed(1) : '--'}</span>
-          {matched && <span style={{ color: C.green, fontWeight: 700, fontSize: 10 }}>{'\u25CF'} LOCKED</span>}
+          <span style={{ fontFamily: "'IBM Plex Mono'", fontSize: 12, color: C.orange }}>B {bpmB ? bpmB.toFixed(1) : '--'}</span>
+          {matched && <span style={{ color: C.green, fontWeight: 700, fontSize: 9 }}>{'\u25CF'}</span>}
+          {/* Phase meter — the real training tool */}
+          {deckA.playing && deckB.playing && phaseMs !== null && (
+            <>
+              <div style={{ width: 1, height: 16, background: C.edge }} />
+              <span style={{ fontSize: 8, color: C.dim, letterSpacing: 1 }}>PHASE</span>
+              <div style={{ width: 56, height: 8, background: '#1a1a1e', borderRadius: 4, position: 'relative', border: `1px solid ${C.edge}` }}>
+                <div style={{ position: 'absolute', left: '50%', top: 0, bottom: 0, width: 1, background: '#333' }} />
+                <div style={{
+                  position: 'absolute', top: -1,
+                  left: `${50 + Math.max(-50, Math.min(50, (phaseMs / 200) * 50))}%`,
+                  width: 6, height: 10, borderRadius: 3,
+                  background: phaseAligned ? C.green : phaseTight ? C.yellow : C.red,
+                  transform: 'translateX(-50%)',
+                  boxShadow: `0 0 4px ${phaseAligned ? C.green : phaseTight ? C.yellow : C.red}`,
+                  transition: 'background 0.1s',
+                }} />
+              </div>
+              <span style={{
+                fontFamily: "'IBM Plex Mono'", fontSize: 10, minWidth: 48, textAlign: 'right',
+                color: phaseAligned ? C.green : phaseTight ? C.yellow : C.red,
+              }}>
+                {phaseMs > 0 ? '+' : ''}{phaseMs.toFixed(0)}ms
+              </span>
+            </>
+          )}
         </div>
+
+        {/* Sync feedback */}
+        {syncFlash && (
+          <div className="rounded mb-1.5 px-3 py-1.5 text-center" style={{ background: `${C.cyan}15`, border: `1px solid ${C.cyan}44`, fontFamily: "'IBM Plex Mono'", fontSize: 11, color: C.cyan }}>
+            {syncFlash}
+          </div>
+        )}
 
         {/* Mobile tabs */}
         {isMobile && (

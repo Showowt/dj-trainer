@@ -1,0 +1,60 @@
+@import url('https://fonts.googleapis.com/css2?family=Oxanium:wght@400;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: #08080a;
+  overflow-x: hidden;
+}
+
+/* Prevent text selection on controls */
+.no-select {
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Jog wheel touch feedback */
+.jog-active {
+  box-shadow: 0 6px 20px rgba(0,0,0,.6), inset 0 0 30px rgba(0,0,0,.7), 0 0 20px rgba(36,193,232,0.15) !important;
+}
+
+/* Pulsing animation for init screen */
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+@keyframes spin-platter {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Track end warning flash */
+@keyframes warning-flash {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+.warning-flash {
+  animation: warning-flash 0.5s ease-in-out infinite;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: #08080a;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2a32;
+  border-radius: 2px;
+}
